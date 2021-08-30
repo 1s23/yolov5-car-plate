@@ -10,7 +10,7 @@ import yaml
 from tqdm import tqdm
 
 from models.experimental import attempt_load
-from utils.datasets import create_dataloader
+from utils.plate_datasets import create_dataloader
 from utils.general import coco80_to_coco91_class, check_dataset, check_file, check_img_size, check_requirements, \
     box_iou, non_max_suppression,non_max_suppression_landmark ,scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr
 from utils.metrics import ap_per_class, ConfusionMatrix
@@ -118,13 +118,31 @@ def test(data,
             targets[:, 2:6] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
-            out = out[..., 0:6]
-            out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
-            #out = non_max_suppression_landmark(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+            # 原本是有的，自己注释掉了
+            # out = out[..., 0:6]
+
+            ##############
+            # 自己新加的
+            # a = out[...,0:5]
+            # b = out[...,13:]
+            # out = torch.cat([a,b],dim=2)
+            ##############
+
+            # out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+
+            ##############
+            # 自己改成了这个
+            out = non_max_suppression_landmark(out, conf_thres=conf_thres, iou_thres=iou_thres)
+            ##############
+
             t1 += time_synchronized() - t
 
         # Statistics per image
         for si, pred in enumerate(out):
+            ##############
+            pred[:,5] = pred[:,13]
+            pred = pred[:,:6]
+            ##############
             labels = targets[targets[:, 0] == si, 1:]
             nl = len(labels)
             tcls = labels[:, 0].tolist() if nl else []  # target class
@@ -138,6 +156,7 @@ def test(data,
 
             # Predictions
             predn = pred.clone()
+
             scale_coords(img[si].shape[1:], predn[:, :4], shapes[si][0], shapes[si][1])  # native-space pred
 
             # Append to text file
@@ -189,6 +208,8 @@ def test(data,
                 for cls in torch.unique(tcls_tensor):
                     ti = (cls == tcls_tensor).nonzero(as_tuple=False).view(-1)  # prediction indices
                     pi = (cls == pred[:, 5]).nonzero(as_tuple=False).view(-1)  # target indices
+                    # 自己改的
+                    # pi = (cls == pred[:, 13]).nonzero(as_tuple=False).view(-1)  # target indices
 
                     # Search for detections
                     if pi.shape[0]:
@@ -208,6 +229,8 @@ def test(data,
 
             # Append statistics (correct, conf, pcls, tcls)
             stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+            # 自己改成了这个
+            # stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 13].cpu(), tcls))
 
         # Plot images
         if plots and batch_i < 3:
@@ -219,6 +242,7 @@ def test(data,
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
     if len(stats) and stats[0].any():
+        print("names:",names)
         p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, save_dir=save_dir, names=names)
         ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
         mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
@@ -231,9 +255,14 @@ def test(data,
     print(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
 
     # Print results per class
+    with open(save_dir / 'result.txt', 'a') as f:
+        f.write("Class\tImages\tLabels\tP\tR\tmAP@.5\tmAP@.5:.95\n")
+        f.write('all' + '\t' + str(seen) + '\t' + str(nt.sum()) + '\t' + str(mp) + '\t' + str(mr) + '\t' + str(map50) + '\t' + str(map) + '\n')
     if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
         for i, c in enumerate(ap_class):
             print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+            with open(save_dir / 'result.txt', 'a') as f:
+                f.write(str(names[c]) + '\t' + str(seen) + '\t' + str(nt[c]) + '\t' +str(p[i]) + '\t' + str(r[i]) + '\t' + str(ap50[i]) + '\t' + str(ap[i]) + '\n')
 
     # Print speeds
     t = tuple(x / seen * 1E3 for x in (t0, t1, t0 + t1)) + (imgsz, imgsz, batch_size)  # tuple
@@ -274,6 +303,11 @@ def test(data,
         except Exception as e:
             print(f'pycocotools unable to run: {e}')
 
+    # 写上weights方便之后分析
+    with open(str(save_dir)+'/info.txt', 'w') as f:
+        info = 'weights:'+ '\t' + weights + '\n' + 'conf_thres:' + '\t' + str(opt.conf_thres) + '\n' + 'iou_thres:' + '\t' + str(opt.iou_thres) + '\n' + 'source:' + '\t' + str(data[task])
+        f.write(info)
+
     # Return results
     model.float()  # for training
     if not training:
@@ -287,12 +321,14 @@ def test(data,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='test.py')
-    parser.add_argument('--weights', nargs='+', type=str, default='yolov5s.pt', help='model.pt path(s)')
-    parser.add_argument('--data', type=str, default='data/coco128.yaml', help='*.data path')
-    parser.add_argument('--batch-size', type=int, default=32, help='size of each image batch')
-    parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.001, help='object confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.6, help='IOU threshold for NMS')
+    parser.add_argument('--weights', nargs='+', type=str, default='./mytrain/three/weights/after_changing_-1/exp18_epoch255/best.pt', help='model.pt path(s)')
+    parser.add_argument('--data', type=str, default='data/carThreeData.yaml', help='*.data path')
+    # parser.add_argument('--weights', nargs='+', type=str, default='yolov5s.pt', help='model.pt path(s)')
+    # parser.add_argument('--data', type=str, default='data/coco128.yaml', help='*.data path')
+    parser.add_argument('--batch-size', type=int, default=2, help='size of each image batch')
+    parser.add_argument('--img-size', type=int, default=192, help='inference size (pixels)')
+    parser.add_argument('--conf-thres', type=float, default=0.6, help='object confidence threshold')
+    parser.add_argument('--iou-thres', type=float, default=0.3, help='IOU threshold for NMS')
     parser.add_argument('--task', default='val', help='train, val, test, speed or study')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--single-cls', action='store_true', help='treat as single-class dataset')

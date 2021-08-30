@@ -22,6 +22,9 @@ from utils.google_utils import gsutil_getsize
 from utils.metrics import fitness
 from utils.torch_utils import init_torch_seeds
 
+import operator
+from functools import reduce
+
 # Settings
 torch.set_printoptions(linewidth=320, precision=5, profile='long')
 np.set_printoptions(linewidth=320, formatter={'float_kind': '{:11.5g}'.format})  # format short g, %precision=5
@@ -29,6 +32,9 @@ pd.options.display.max_columns = 10
 cv2.setNumThreads(0)  # prevent OpenCV from multithreading (incompatible with PyTorch DataLoader)
 os.environ['NUMEXPR_MAX_THREADS'] = str(min(os.cpu_count(), 8))  # NumExpr max threads
 
+def file_size(file):
+    # Return file size in MB
+    return Path(file).stat().st_size / 1e6
 
 def set_logging(rank=-1):
     logging.basicConfig(
@@ -517,7 +523,7 @@ def non_max_suppression_landmark(prediction, conf_thres=0.25, iou_thres=0.45, cl
 
     nc = prediction.shape[2] - 13  # number of classes
     xc = prediction[..., 4] > conf_thres  # candidates
-    #print('xc: ', prediction[..., 4] )
+    # print('xc: ', prediction[..., 4] )
 
     # Settings
     min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
@@ -533,6 +539,8 @@ def non_max_suppression_landmark(prediction, conf_thres=0.25, iou_thres=0.45, cl
     for xi, x in enumerate(prediction):  # image index, image inference
         # Apply constraints
         # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
+        # print(xc[xi])
+        # 这个会将是True的值返回，tensor可以这样用，list不行
         x = x[xc[xi]]  # confidence
 
         # Cat apriori labels if autolabelling
@@ -714,3 +722,175 @@ def increment_path(path, exist_ok=False, sep='', mkdir=False):
     if not dir.exists() and mkdir:
         dir.mkdir(parents=True, exist_ok=True)  # make directory
     return path
+
+def crop_rotate(image, pts):
+    '''
+    :param image: numpy.array, origin image
+    :param pts: numpy.array, points of bbox at any angle, shape with (-1, 2)
+    :return:
+    '''
+
+    h, w = image.shape[:2]
+
+    # 计算 ROI 的倾斜角度
+    cos_a, sin_a, _, _ = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01)
+    angle = math.acos(cos_a) * 180 / math.pi
+
+    # 根据 ROI 倾斜角计算旋转矩阵，旋转中心就是 ROI 的中心
+    cX, cY = np.mean(pts[:, 0]), np.mean(pts[:, 1])
+    M = cv2.getRotationMatrix2D((cX, cY), angle, 1)
+    cos = np.abs(M[0, 0])
+    sin = np.abs(M[0, 1])
+
+    # 计算旋转之后图像的宽度和高度
+    nW = int((h * sin) + (w * cos))
+    nH = int((h * cos) + (w * sin))
+
+    # 调整旋转矩阵
+    M[0, 2] += (nW / 2) - cX
+    M[1, 2] += (nH / 2) - cY
+
+    # 旋转图像
+    image = cv2.warpAffine(image, M, (nW, nH), borderValue=(255, 255, 255))
+    # cv2.imshow('image',image)
+    # cv2.waitKey(0)
+
+    # 计算旋转之后的 ROI
+    pts = np.pad(pts, pad_width=((0, 0), (0, 1)), mode='constant', constant_values=((0, 0), (0, 1))).reshape((-1, 3, 1))
+    pts = [np.dot(M, pts[i]) for i in range(pts.shape[0])]
+    pts = np.array(pts, np.int32).reshape((-1, 1, 2))
+
+    # 计算 ROI 掩码
+    mask = np.zeros((nH, nW, 3), dtype=np.uint8) + 255
+    mask = cv2.drawContours(mask, [pts], -1, (0, 0, 0), -1)
+
+    # 掩码融合
+    image = cv2.add(image, mask)
+    # cv2.imshow('image',image)
+    # cv2.waitKey(0)
+
+    # 截取规则图像
+    rect = cv2.minAreaRect(pts)
+    box = np.int0(cv2.boxPoints(rect))
+    roi = image[min(box[:, 1]):max(box[:, 1]), min(box[:, 0]):max(box[:, 0])]
+
+    return roi
+
+
+def sortPoint(pointList):
+    center = tuple(map(operator.truediv, reduce(lambda x, y: map(operator.add, x, y), pointList), [len(pointList)] * 2))
+    pointSortList = sorted(pointList, key=lambda coord: (180 - math.degrees(math.atan2(*tuple(map(operator.sub, coord, center))[::-1]))) % 360, reverse=True)
+    pointSortList = np.array(pointSortList)
+    # print(pointSortList)
+    return pointSortList
+
+
+def drow_box(img, cnt):
+    rect_box = cv2.boundingRect(cnt)
+    rotated_box = cv2.minAreaRect(cnt)
+
+    # 画矩形框
+    cv2.rectangle(img, (rect_box[0], rect_box[1]),
+                  (rect_box[0] + rect_box[2], rect_box[1] + rect_box[3]), (0, 255, 0), 2)
+    # cv2.imshow('img', img)
+    # cv2.waitKey(0)
+
+    # 画最小矩形框
+    box = cv2.boxPoints(rotated_box)
+    box = np.int0(box)
+    cv2.drawContours(img, [box], 0, (0, 0, 255), 2)
+    # plt.imshow(img)
+    # plt.show()
+
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    # cv2.imshow('img', img)
+    # cv2.waitKey(0)
+    # plt.imshow(img)
+    # plt.show()
+
+    return img, rotated_box, box
+
+
+def crop1(img, cnt):
+    horizon = True
+
+    img, rotated_box, _ = drow_box(img, cnt)
+
+    center, size, angle = rotated_box[0], rotated_box[1], rotated_box[2]
+    center, size = tuple(map(int, center)), tuple(map(int, size))
+
+    print(size)
+    print(angle)
+
+    # 长的作为宽，短的作为高
+    if horizon:
+        if size[0] < size[1]:
+            angle -= 90
+            w = size[1]
+            h = size[0]
+        else:
+            w = size[0]
+            h = size[1]
+        size = (w, h)
+
+    height, width = img.shape[0], img.shape[1]
+
+    M = cv2.getRotationMatrix2D(center, angle, 1)
+    img_rot = cv2.warpAffine(img, M, (width, height))
+    img_crop = cv2.getRectSubPix(img_rot, size, center)
+
+    # cv2.imshow('img_crop', img_crop)
+    # cv2.waitKey(0)
+    return img_crop
+
+    # show([img, img_rot, img_crop])
+
+# 透射变换
+def crop2(img, cnt):
+    # 得到最小的外接矩阵
+    img, rotated_box, box = drow_box(img, cnt)
+
+    width = int(rotated_box[1][0])
+    height = int(rotated_box[1][1])
+
+    # print(width, height)
+
+    if width > height:
+        w = width
+        h = height
+    else:
+        w = height
+        h = width
+
+    src_pts = box.astype("float32")
+    # print(src_pts)
+    # print(type(src_pts))
+    src_pts = sortPoint(src_pts)
+    dst_pts = np.array([[0, 0],
+                        [w - 1, 0],
+                        [w - 1, h - 1],
+                        [0, h - 1]], dtype="float32")
+
+    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    warped = cv2.warpPerspective(img, M, (w, h))
+
+    return warped
+
+    # cv2.imshow('warped', warped)
+    # cv2.waitKey(0)
+
+# 不做变换直接抠图
+def crop(img, cnt):
+    rect_box = cv2.boundingRect(cnt)
+    x1 = rect_box[0]
+    y1 = rect_box[1]
+    x2 = rect_box[0] + rect_box[2]
+    y2 =  rect_box[1] + rect_box[3]
+    # 画矩形框
+    # cv2.rectangle(img, (x1, y1),
+    #               (x2, y2), (0, 255, 0), 2)
+    # cv2.imshow('img', img)
+    # cv2.waitKey(0)
+    img = img[y1:y2,x1:x2]
+
+    return img

@@ -38,6 +38,32 @@ for orientation in ExifTags.TAGS.keys():
         break
 
 
+def exif_transpose(image):
+    """
+    Transpose a PIL image accordingly if it has an EXIF Orientation tag.
+    From https://github.com/python-pillow/Pillow/blob/master/src/PIL/ImageOps.py
+
+    :param image: The image to transpose.
+    :return: An image.
+    """
+    exif = image.getexif()
+    orientation = exif.get(0x0112, 1)  # default 1
+    if orientation > 1:
+        method = {2: Image.FLIP_LEFT_RIGHT,
+                  3: Image.ROTATE_180,
+                  4: Image.FLIP_TOP_BOTTOM,
+                  5: Image.TRANSPOSE,
+                  6: Image.ROTATE_270,
+                  7: Image.TRANSVERSE,
+                  8: Image.ROTATE_90,
+                  }.get(orientation)
+        if method is not None:
+            image = image.transpose(method)
+            del exif[0x0112]
+            image.info["exif"] = exif.tobytes()
+    return image
+
+
 def get_hash(files):
     # Returns a single hash value of a list of files
     return sum(os.path.getsize(f) for f in files if os.path.isfile(f))
@@ -425,6 +451,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             irect = ar.argsort()
             self.img_files = [self.img_files[i] for i in irect]
             self.label_files = [self.label_files[i] for i in irect]
+            self.labels = [self.labels[i] for i in irect]
             self.labels = [self.labels[i] for i in irect]
             self.shapes = s[irect]  # wh
             ar = ar[irect]
@@ -817,7 +844,7 @@ def replicate(img, labels):
 
     return img, labels
 
-
+# 图片size处理
 def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32):
     # Resize and pad image while meeting stride-multiple constraints
     shape = img.shape[:2]  # current shape [height, width]

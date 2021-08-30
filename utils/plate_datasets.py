@@ -423,6 +423,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             self.img_files = [self.img_files[i] for i in irect]
             self.label_files = [self.label_files[i] for i in irect]
             self.labels = [self.labels[i] for i in irect]
+            # 自己加的
+            self.landmarks = [self.landmarks[i] for i in irect]
+
             self.shapes = s[irect]  # wh
             ar = ar[irect]
 
@@ -550,8 +553,14 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             if labels.size:  # normalized xywh to pixel xyxy format
                 labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
                 mask_landmarks = [np.array(x != -1, dtype = np.int32) for x in landmarks]
-                landmarks = [xyn2xy(x, w, h, padw, padh) for x in landmarks]
+                # 自己改的
+                landmarks = [xyn2xy(x, w, h, padw=pad[0], padh=pad[1]) for x in landmarks]
+                # landmarks = [xyn2xy(x, w, h, padw, padh) for x in landmarks]
+
                 landmarks = [x * y + y - 1 for x, y in zip(landmarks, mask_landmarks)]
+
+                # 自己加的
+                landmarks = np.array(landmarks)
                 #landmarks = landmarks.reshape(landmarks.shape[0], -1)
                 #labels = np.hstack((labels,landmarks)) 
 
@@ -571,7 +580,12 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         else:
             if landmarks.shape[0] > 0:
                 landmarks = landmarks.reshape(landmarks.shape[0], -1)
-                labels = np.hstack((labels,landmarks)) 
+                try:
+                    labels = np.hstack((labels,landmarks))
+                except:
+                    print("file:",self.label_files[index])
+                    print("labels:",labels)
+                    print("landmarks:",landmarks)
             # Apply cutouts
             # if random.random() < 0.9:
             #     labels = cutout(img, labels)
@@ -737,9 +751,13 @@ def load_mosaic(self, index):
 
         # Labels
         labels, landmarks = self.labels[index].copy(), self.landmarks[index].copy()
+        # 自己加的 -- 我觉得应加上
+        landmarks = np.array(landmarks)
+
         if labels.size:
             labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padw, padh)  # normalized xywh to pixel xyxy format
             mask_landmarks = np.array(landmarks != -1, dtype = np.int32)
+            # print(landmarks != -1)
             landmarks = [xyn2xy(x, w, h, padw, padh) for x in landmarks]
             landmarks =  landmarks * mask_landmarks + mask_landmarks - 1
             

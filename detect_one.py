@@ -56,6 +56,7 @@ def scale_coords_landmarks(img1_shape, coords, img0_shape, ratio_pad=None):
 
 
 def show_results(img, xywh, conf, landmarks, class_num):
+    pointFlag = True if int(class_num)==2 else False
     h,w,c = img.shape
     tl = 1 or round(0.002 * (h + w) / 2) + 1  # line/font thickness
     x1 = int(xywh[0] * w - 0.5 * xywh[2] * w)
@@ -69,10 +70,13 @@ def show_results(img, xywh, conf, landmarks, class_num):
     for i in range(4):
         point_x = int(landmarks[2 * i] * w)
         point_y = int(landmarks[2 * i + 1] * h)
-        cv2.circle(img, (point_x, point_y), tl+1, clors[i], -1)
+        print("point:",point_x,point_y)
+        if pointFlag:
+            cv2.circle(img, (point_x, point_y), tl+1, clors[i], -1)
 
     tf = max(tl - 1, 1)  # font thickness
     label = str(int(class_num)) + ': ' + str(conf)[:5]
+    print("label:",label)
     cv2.putText(img, label, (x1, y1 - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
     return img
 
@@ -88,8 +92,13 @@ def warpimage(img, pts1):
 def detect_one(model, image_path, device):
     # Load model
     img_size = 640
-    conf_thres = 0.3
-    iou_thres = 0.5
+    # 置信度阈值
+    conf_thres = 0.8
+    iou_thres = 0.3
+
+    # 原本的
+    # conf_thres = 0.3
+    # iou_thres = 0.5000
 
     orgimg = cv2.imread(image_path)  # BGR
     img0 = copy.deepcopy(orgimg)
@@ -120,6 +129,7 @@ def detect_one(model, image_path, device):
     pred = model(img)[0]
     print('pred: ', pred.shape)
     # Apply NMS
+    # 非极大抑制
     pred = non_max_suppression_landmark(pred, conf_thres, iou_thres)
     print('nms: ', pred)
     t2 = time_synchronized()
@@ -178,11 +188,14 @@ def detect_one(model, image_path, device):
 
 if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    weights = './weights/last.pt'
+    # weights = './mytrain/three/weights/after_changing/epoch177/best.pt'
+    weights = './mytrain/three/weights/after_changing_-1/exp18_epoch255/best.pt'
+    # weights = './mytrain/three/weights/after_changing_exp20/best.pt'
     cfg_path = './models/yolov5s.yaml'
     model = load_model(weights, cfg_path, device)
-    root = '/home/xialuxi/work/dukto/data/CCPD2020/CCPD2020/images/test/'
-    image_path = '/home/xialuxi/work/download/30202039157.jpg'
+    # image_path = './data/small/images/test/[IFPID-317866][TAG-SB9N2N][STATE-MO][MAKE-][PREGION-0,202,178,133].jpg'
+    image_path = './data/images/test11.jpg'
+    # image_path = '/home/xialuxi/work/download/30202039157.jpg'
     detect_one(model, image_path, device)
     print('over')
 

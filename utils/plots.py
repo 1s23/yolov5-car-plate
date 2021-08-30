@@ -26,6 +26,26 @@ matplotlib.rc('font', **{'size': 11})
 matplotlib.use('Agg')  # for writing to files only
 
 
+class Colors:
+    # Ultralytics color palette https://ultralytics.com/
+    def __init__(self):
+        # hex = matplotlib.colors.TABLEAU_COLORS.values()
+        hex = ('FF3838', 'FF9D97', 'FF701F', 'FFB21D', 'CFD231', '48F90A', '92CC17', '3DDB86', '1A9334', '00D4BB',
+               '2C99A8', '00C2FF', '344593', '6473FF', '0018EC', '8438FF', '520085', 'CB38FF', 'FF95C8', 'FF37C7')
+        self.palette = [self.hex2rgb('#' + c) for c in hex]
+        self.n = len(self.palette)
+
+    def __call__(self, i, bgr=False):
+        c = self.palette[int(i) % self.n]
+        return (c[2], c[1], c[0]) if bgr else c
+
+    @staticmethod
+    def hex2rgb(h):  # rgb order (PIL)
+        return tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
+
+
+colors = Colors()  # create instance for 'from utils.plots import colors'
+
 def color_list():
     # Return first 10 plt colors as (r,g,b) https://stackoverflow.com/questions/51350872/python-from-color-name-to-rgb
     def hex2rgb(h):
@@ -115,7 +135,7 @@ def output_to_target(output):
 
 def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max_size=640, max_subplots=16):
     # Plot image grid with labels
-
+    # print("images:",images)
     if isinstance(images, torch.Tensor):
         images = images.cpu().float().numpy()
     if isinstance(targets, torch.Tensor):
@@ -156,6 +176,7 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
             boxes = xywh2xyxy(image_targets[:, 2:6]).T
             classes = image_targets[:, 1].astype('int')
             labels = image_targets.shape[1] == 6  # labels if no conf column
+            # 这个好像还是yolov5的展示方式，6已经不是置信度了吧，感觉
             conf = None if labels else image_targets[:, 6]  # check for confidence presence (label vs pred)
 
             if boxes.shape[1]:
@@ -166,12 +187,14 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
                     boxes *= scale_factor
             boxes[[0, 2]] += block_x
             boxes[[1, 3]] += block_y
+            # print("boxes:",boxes)
             for j, box in enumerate(boxes.T):
                 cls = int(classes[j])
                 color = colors[cls % len(colors)]
                 cls = names[cls] if names else cls
                 if labels or conf[j] > 0.25:  # 0.25 conf thresh
                     label = '%s' % cls if labels else '%s %.1f' % (cls, conf[j])
+                    # 这个是画框的
                     plot_one_box(box, mosaic, label=label, color=color, line_thickness=tl)
 
         # Draw image filename labels
@@ -182,6 +205,7 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
                         lineType=cv2.LINE_AA)
 
         # Image border
+        # 这是图片边框
         cv2.rectangle(mosaic, (block_x, block_y), (block_x + w, block_y + h), (255, 255, 255), thickness=3)
 
     if fname:
@@ -433,3 +457,28 @@ def plot_results(start=0, stop=0, bucket='', id=(), labels=(), save_dir=''):
 
     ax[1].legend()
     fig.savefig(Path(save_dir) / 'results.png', dpi=200)
+
+def feature_visualization(x, module_type, stage, n=32, save_dir=Path('runs/detect/exp')):
+    """
+    x:              Features to be visualized
+    module_type:    Module type
+    stage:          Module stage within model
+    n:              Maximum number of feature maps to plot
+    save_dir:       Directory to save results
+    """
+    if 'Detect' not in module_type:
+        batch, channels, height, width = x.shape  # batch, channels, height, width
+        if height > 1 and width > 1:
+            f = f"stage{stage}_{module_type.split('.')[-1]}_features.png"  # filename
+
+            blocks = torch.chunk(x[0].cpu(), channels, dim=0)  # select batch index 0, block by channels
+            n = min(n, channels)  # number of plots
+            fig, ax = plt.subplots(math.ceil(n / 8), 8, tight_layout=True)  # 8 rows x n/8 cols
+            ax = ax.ravel()
+            plt.subplots_adjust(wspace=0.05, hspace=0.05)
+            for i in range(n):
+                ax[i].imshow(blocks[i].squeeze())  # cmap='gray'
+                ax[i].axis('off')
+
+            print(f'Saving {save_dir / f}... ({n}/{channels})')
+            plt.savefig(save_dir / f, dpi=300, bbox_inches='tight')

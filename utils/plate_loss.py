@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import numpy as np
 
 from utils.general import bbox_iou
 from utils.torch_utils import is_parallel
@@ -108,7 +109,9 @@ class WingLoss(nn.Module):
 
     def forward(self, x, t, sigma=1):
         weight = torch.ones_like(t)
-        weight[torch.where(t==-1)] = 0
+        # 自己改成了这样
+        weight[torch.where(t==-0)] = 0
+        # weight[torch.where(t==-1)] = 0
         diff = weight * (x - t)
         abs_diff = diff.abs()
         flag = (abs_diff.data < self.w).float()
@@ -138,15 +141,27 @@ class CrossIouLoss(nn.Module):
         #print('loss: ', loss.shape)
         return loss
 
+# class LandmarksLoss(nn.Module):
+#     # BCEwithLogitLoss() with reduced missing label effects.
+#     def __init__(self):
+#         super(LandmarksLoss, self).__init__()
+#         self.loss_fcn = nn.SmoothL1Loss(reduction='sum')
+#
+#     def forward(self, pred, truel, mask):
+#         loss = self.loss_fcn(pred*mask, truel*mask)
+#         return loss / (torch.sum(mask) + 1e-6)
+
+# 自己改成了这个，原本是上面那个SmoothL1Loss
 class LandmarksLoss(nn.Module):
     # BCEwithLogitLoss() with reduced missing label effects.
-    def __init__(self):
+    def __init__(self, alpha=1.0):
         super(LandmarksLoss, self).__init__()
-        self.loss_fcn = nn.SmoothL1Loss(reduction='sum')
+        self.loss_fcn = WingLoss()#nn.SmoothL1Loss(reduction='sum')
+        self.alpha = alpha
 
     def forward(self, pred, truel, mask):
         loss = self.loss_fcn(pred*mask, truel*mask)
-        return loss / (torch.sum(mask) + 1e-6)
+        return loss / (torch.sum(mask) + 10e-14)
 
 class ComputePlateLoss:
     # Compute losses
@@ -159,7 +174,9 @@ class ComputePlateLoss:
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
 
-        self.landmarks_loss = LandmarksLoss()
+        # 这里自己改了，改成了wingloss
+        self.landmarks_loss = LandmarksLoss(1.0)
+        # self.landmarks_loss = LandmarksLoss()
 
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
         self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
@@ -178,7 +195,9 @@ class ComputePlateLoss:
 
     def __call__(self, p, targets):  # predictions, targets, model
         device = targets.device
+        # 比yolov5多了lmark
         lcls, lbox, lobj, lmark = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
+        # 比yolov5多了tlandmarks,lmks_mask
         tcls, tbox, indices, anchors, tlandmarks, lmks_mask = self.build_targets(p, targets)  # targets
 
         # Losses
@@ -192,6 +211,8 @@ class ComputePlateLoss:
                 ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets
 
                 # Regression
+                # 目标框回归
+                # 根据公式，将偏移量反算出预测实际值
                 pxy = ps[:, :2].sigmoid() * 2. - 0.5
                 pwh = (ps[:, 2:4].sigmoid() * 2) ** 2 * anchors[i]
                 pbox = torch.cat((pxy, pwh), 1)  # predicted box
@@ -203,10 +224,16 @@ class ComputePlateLoss:
                 #print('tobj: ',tobj[b, a, gj, gi] )
 
                 # Classification
+                # 原本
+                # if self.nc > 1:  # cls loss (only if multiple classes)
+                #     t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
+                #     t[range(n), tcls[i]] = self.cp
+                #     lcls += self.BCEcls(ps[:, 5:], t)  # BCE
+
                 if self.nc > 1:  # cls loss (only if multiple classes)
-                    t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
+                    t = torch.full_like(ps[:, 13:], self.cn, device=device)  # targets
                     t[range(n), tcls[i]] = self.cp
-                    lcls += self.BCEcls(ps[:, 5:], t)  # BCE
+                    lcls += self.BCEcls(ps[:, 13:], t)  # BCE
 
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:
@@ -214,6 +241,7 @@ class ComputePlateLoss:
 
                 #landmarks loss
                 #print('ps: ', ps.shape)
+                # 新增，这个和yolov5-face的不同
                 plandmarks = ps[:,5:13].sigmoid() * 8. - 4.
 
                 #print('anchors: ', anchors[i].shape)

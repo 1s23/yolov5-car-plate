@@ -26,6 +26,7 @@ from models.experimental import attempt_load
 from models.yolo_plate import Model
 #from models.yolo import Model
 from utils.autoanchor import check_anchors
+# plate_datasets的dataloader
 from utils.plate_datasets import create_dataloader
 #from utils.datasets import create_dataloader
 from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
@@ -47,6 +48,7 @@ def train(hyp, opt, device, tb_writer=None):
         opt.save_dir, opt.epochs, opt.batch_size, opt.total_batch_size, opt.weights, opt.global_rank
 
     # Directories
+    save_dir = Path(save_dir)
     wdir = save_dir / 'weights'
     wdir.mkdir(parents=True, exist_ok=True)  # make dir
     last = wdir / 'last.pt'
@@ -98,6 +100,7 @@ def train(hyp, opt, device, tb_writer=None):
         model = Model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
+    # 数据来源路径
     train_path = data_dict['train']
     test_path = data_dict['val']
 
@@ -284,7 +287,18 @@ def train(hyp, opt, device, tb_writer=None):
         optimizer.zero_grad()
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
+
+            # print(imgs.shape)
+            # import cv2
+            # img = imgs.numpy()
+            # cv2.imshow('img',img[0].transpose(2,1,0))
+            # cv2.waitKey(0)
+            # cv2.imshow('img',img[1].transpose(2,1,0))
+            # cv2.waitKey(0)
+
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
+
+
 
             # Warmup
             if ni <= nw:
@@ -464,15 +478,21 @@ def train(hyp, opt, device, tb_writer=None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    # parser.add_argument('--weights', type=str, default='./weights/last.pt', help='initial weights path')
     parser.add_argument('--weights', type=str, default='./weights/yolov5s.pt', help='initial weights path')
     parser.add_argument('--cfg', type=str, default='models/yolov5s.yaml', help='model.yaml path')
-    parser.add_argument('--data', type=str, default='data/plat.yaml', help='data.yaml path')
+    # parser.add_argument('--cfg', type=str, default='', help='model.yaml path')
+    # parser.add_argument('--data', type=str, default='data/carThreeData.yaml', help='data.yaml path')
+    # parser.add_argument('--data', type=str, default='data/plat.yaml', help='data.yaml path')
+    parser.add_argument('--data', type=str, default='data/coco128.yaml', help='data.yaml path')
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.yaml', help='hyperparameters path')
-    parser.add_argument('--epochs', type=int, default=300)
-    parser.add_argument('--batch-size', type=int, default=8, help='total batch size for all GPUs')
+    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--batch-size', type=int, default=2, help='total batch size for all GPUs')
     parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='[train, test] image sizes')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
+    #
     parser.add_argument('--resume', nargs='?', const=True, default=False, help='resume most recent training')
+    # parser.add_argument('--resume', nargs='?', const=True, default="./runs/train/exp70/weights/last.pt", help='resume most recent training')
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
     parser.add_argument('--notest', action='store_true', help='only test final epoch')
     parser.add_argument('--noautoanchor', action='store_true', help='disable autoanchor check')
@@ -515,6 +535,7 @@ if __name__ == '__main__':
         assert os.path.isfile(ckpt), 'ERROR: --resume checkpoint does not exist'
         apriori = opt.global_rank, opt.local_rank
         with open(Path(ckpt).parent.parent / 'opt.yaml') as f:
+            # opt = argparse.Namespace(**yaml.safe_load(f))  # replace
             opt = argparse.Namespace(**yaml.load(f, Loader=yaml.SafeLoader))  # replace
         opt.cfg, opt.weights, opt.resume, opt.batch_size, opt.global_rank, opt.local_rank = '', ckpt, True, opt.total_batch_size, *apriori  # reinstate
         logger.info('Resuming training from %s' % ckpt)
